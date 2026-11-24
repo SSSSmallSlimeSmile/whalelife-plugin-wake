@@ -46,6 +46,7 @@ plugins/wake/
   "permission": "full",
   "session_mode": "own",
   "session_id": "",
+  "persona": "",
   "prompts": ["醒醒。去看一眼……", "另一条……"]
 }
 ```
@@ -59,6 +60,7 @@ plugins/wake/
 | `permission` | `off` / `ask` / `full`。要写文件必须是 `full` |
 | `session_mode` | `own` 自己那条（默认）／`current` 宿主当前选中的那条 |
 | `session_id` | 专用会话 id。留空则第一次唤醒时自动建一条，之后复用 |
+| `persona` | 用哪张人格卡跑。留空跟随宿主当前人格 |
 | `prompts` | 唤醒内容，每次随机抽一条；老写法 `prompt` 单条也认 |
 
 ## 接口
@@ -67,6 +69,7 @@ plugins/wake/
 |---|---|---|
 | POST | `/plugins/wake/fire` | 立刻投一轮。body 或查询串可带 `source` / `id` / `force` |
 | POST | `/plugins/wake/save` | 保存配置，合并式：只传要改的键 |
+| GET | `/plugins/wake/sessions` | 只读：可选的会话清单 + 人格清单，给页面下拉用 |
 | GET | `/plugins/wake/` | 设置页 |
 
 `fire` **立刻回 202**，在后台投递。因为 `enqueue` 会等到整轮跑完（含模型调用）才返回，
@@ -75,6 +78,12 @@ plugins/wake/
 
 `force=1` 越过开关和限流，只给用户点名的场景用（页面按钮、`self_wake_now`）。
 定时和外部通知触发的请求都要受限流管，否则配错一次就是一小时九次。
+
+## 页面上能改的
+
+四块：开关与节奏（开关、间隔、一小时上限、权限）、落在哪条会话（`session_mode` + 下拉选具体会话）、用哪张人格卡、唤醒内容（一行一条）。
+
+会话和人格那两个下拉靠 `/plugins/wake/sessions` 填。选中的会话要是被删了，页面会写明「下次唤醒会新建一条」，不静悄悄地换。
 
 ## 两个工具
 
@@ -96,4 +105,4 @@ plugins/wake/
 
 ## 状态
 
-0.2.0。单机在用，没有为了通用做抽象。
+0.2.1。单机在用，没有为了通用做抽象。

@@ -36,6 +36,8 @@ const DEFAULTS = {
   session_mode: "own" as "own" | "current",
   /** 专用会话 id。留空则第一次唤醒时自动建一条，之后复用。 */
   session_id: "",
+  /** 用哪个人格；留空跟随宿主当前人格。 */
+  persona: "",
 };
 
 const FALLBACK_PROMPT = DEFAULTS.prompts[0];
@@ -49,6 +51,7 @@ type Config = {
   max_per_hour: number;
   session_mode: "own" | "current";
   session_id: string;
+  persona: string;
 };
 
 function normalize(raw: any): Config {
@@ -61,6 +64,7 @@ function normalize(raw: any): Config {
     max_per_hour: Number(raw?.max_per_hour) > 0 ? Math.floor(Number(raw.max_per_hour)) : DEFAULTS.max_per_hour,
     session_mode: raw?.session_mode === "current" ? "current" : "own",
     session_id: typeof raw?.session_id === "string" ? raw.session_id.trim() : "",
+    persona: typeof raw?.persona === "string" ? raw.persona.trim() : "",
   };
   // 新写法 prompts 数组；老写法 prompt 单条，两边都认。
   if (Array.isArray(raw?.prompts)) {
@@ -147,6 +151,7 @@ export async function apply(ctx: Context) {
         priority: -50,
         key: "self-wake",
         ...(cfg.model ? { model: cfg.model } : {}),
+        ...(cfg.persona ? { persona: cfg.persona } : {}),
         origin: { action: "self_wake" } as any,
       });
       lastError = "";
@@ -190,6 +195,7 @@ export async function apply(ctx: Context) {
         last_error: lastError,
         session_mode: cfg.session_mode,
         session_id: cfg.session_id,
+        persona: cfg.persona,
         last_results: { skipped_by_cap: /上限/.test(lastError), disabled: lastError === "关着" },
       });
     },
@@ -263,6 +269,29 @@ export async function apply(ctx: Context) {
     });
   });
 
+  // 只读：给页面一份会话清单。ctx.web.api 只注册 POST，GET 必须走 page。
+  // 不传 entry，所以它不会出现在插件的页面列表里。
+  ctx.web.page("/plugins/wake/sessions", async (_req: any, res: any) => {
+    let personas: any[] = [];
+    try {
+      personas = (ctx as any).personas?.list?.() ?? [];
+    } catch {
+      personas = [];
+    }
+    try {
+      const list = await ctx.sessions.list();
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({
+        ok: true,
+        items: list.map((s: any) => ({ id: String(s.id), name: s.name ?? "", persona: s.persona ?? "" })),
+    personas: personas.map((p: any) => ({ id: String(p.id), name: p.name ?? "", model: p.model ?? null })),
+      }));
+    } catch (error: any) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ ok: false, error: error?.message ?? String(error) }));
+    }
+  });
+
   ctx.web.page(
     "/plugins/wake/",
     async (_req: any, res: any) => {
@@ -312,7 +341,18 @@ export async function apply(ctx: Context) {
       ${(["own", "current"] as const).map((m) => `<option value="${m}" ${cfg.session_mode === m ? "selected" : ""}>${m}</option>`).join("")}
     </select>
   </div>
-  <div><label>当前会话</label><div style="padding:7px 0;word-break:break-all">${cfg.session_id || "（下次唤醒时自动建一条）"}</div></div>
+  <div><label for="sess">专用会话</label>
+    <select id="sess" style="width:100%;padding:7px 9px;border:1px solid #ccc;border-radius:6px;font:inherit">
+      <option value="">（下次唤醒时自动建一条）</option>
+    </select>
+    <p class="hint" id="sessHint"></p>
+  </div>
+  <div><label for="persona">人格</label>
+    <select id="persona" style="width:100%;padding:7px 9px;border:1px solid #ccc;border-radius:6px;font:inherit">
+      <option value="">（跟随宿主当前人格）</option>
+    </select>
+    <p class="hint" id="personaHint"></p>
+  </div>
 </div>
 <button id="rebuild" class="ghost" style="margin-top:8px">换一条新会话</button>
 </fieldset>
@@ -331,7 +371,7 @@ const $=(id)=>document.getElementById(id);
 const msg=(t,c)=>{const el=$("msg");el.textContent=t;el.style.color=c||"#0a6";setTimeout(()=>{if(el.textContent===t)el.textContent=""},3000);};
 $("save").onclick=async()=>{
   const prompts=$("prompts").value.split("\\n").map(s=>s.trim()).filter(Boolean);
-  const body={enabled:$("enabled").checked,interval_minutes:Number($("interval").value),max_per_hour:Number($("max").value),permission:$("perm").value,session_mode:$("smode").value,prompts};
+  const body={enabled:$("enabled").checked,interval_minutes:Number($("interval").value),max_per_hour:Number($("max").value),permission:$("perm").value,session_mode:$("smode").value,session_id:$("sess").value,persona:$("persona").value,prompts};
   $("save").disabled=true;
   try{
     const r=await fetch("/plugins/wake/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -350,6 +390,39 @@ $("fire").onclick=async()=>{
   }catch(e){msg("投递失败："+e,"#c00");}
   finally{$("fire").disabled=false;}
 };
+(async()=>{
+  const sel=$("sess"),hint=$("sessHint"),cur=${JSON.stringify(cfg.session_id)};
+  const psel=$("persona"),phint=$("personaHint"),pcur=${JSON.stringify(cfg.persona)};
+  try{
+    const r=await fetch("/plugins/wake/sessions",{cache:"no-store"});
+    const j=await r.json();
+    if(!j.ok){hint.textContent="列会话失败："+(j.error||"未知");return;}
+    for(const s of (j.items||[])){
+      const o=document.createElement("option");
+      o.value=s.id;
+      o.textContent=(s.name||"(无名)")+" · "+s.id.slice(0,8);
+      sel.appendChild(o);
+    }
+    if(cur){
+      let found=false;
+      for(const o of sel.options) if(o.value===cur) found=true;
+      if(found) sel.value=cur;
+      else hint.textContent="原来的会话 "+cur.slice(0,8)+" 已经不在了，下次唤醒会新建一条";
+    }
+    for(const p of (j.personas||[])){
+      const o=document.createElement("option");
+      o.value=p.id;
+      o.textContent=(p.name||p.id)+(p.model?" · "+p.model:"");
+      psel.appendChild(o);
+    }
+    if(pcur){
+      let pf=false;
+      for(const o of psel.options) if(o.value===pcur) pf=true;
+      if(pf) psel.value=pcur;
+      else phint.textContent="原来的人格 "+pcur+" 现在列不出来了，唤醒会跟随当前人格";
+    }
+  }catch(e){hint.textContent="列会话失败："+e;}
+})();
 $("rebuild").onclick=async()=>{
   $("rebuild").disabled=true;
   try{
@@ -362,6 +435,6 @@ $("rebuild").onclick=async()=>{
 </script>
 </div>`);
     },
-    { title: "自我唤醒", settings: true },
+    { title: "自我唤醒", settings: true, navigation: true },
   );
 }

@@ -1,6 +1,6 @@
 id: wake
 name: 自我唤醒
 description: 到点自己开一轮。间隔、唤醒内容、落哪条会话都能单独设；默认自己建一条专用会话，不碰主会话，优先级排在用户后面。
-version: 0.2.0
+version: 0.2.1
 apiVersion: "1.0.0"
 depends: [web, sessions, tools]
